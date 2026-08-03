@@ -68,3 +68,101 @@ class ManifoldModelFramework(nn.Module):
             outputs.append(self.decoder(z))
 
         return torch.stack(outputs), manifold_logits
+
+    # ------------------------------------------------------------------ #
+    # Read-outs
+    #
+    # ``forward`` deliberately returns every branch plus raw logits and takes no
+    # stand on how to collapse them.  These two methods spell out the only thing
+    # the logits are ever meant to be -- a categorical distribution over
+    # branches -- so callers do not each re-derive the indexing.  Both take
+    # ``forward``'s output rather than ``x``, so a single forward pass can serve
+    # both read-outs.
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def combine(outputs: Tensor, manifold_logits: Tensor) -> tuple[Tensor, Tensor]:
+        """Soft read-out: the gate-weighted convex combination of every branch.
+
+        Differentiable in both the branch outputs and the gate, which is what
+        makes it the read-out to *train* through: gradient reaches every
+        manifold, weighted by how much the gate currently favours it, so the
+        gate can learn which geometry fits without any branch being cut off.
+
+        Args:
+            outputs: ``(K, ..., P)`` branch outputs, as returned by ``forward``.
+            manifold_logits: ``(..., K)`` raw gating logits.
+
+        Returns:
+            pred: ``(..., P)`` mixture ``sum_k gate_k * outputs_k``.
+            gate: ``(..., K)`` gating probabilities.
+        """
+        gate = manifold_logits.softmax(dim=-1)
+        weights = gate.movedim(-1, 0).unsqueeze(-1)   # (K, ..., 1)
+        return (weights * outputs).sum(dim=0), gate
+
+    @staticmethod
+    def select(outputs: Tensor, manifold_logits: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Hard read-out: the single most probable branch, per sample.
+
+        The read-out for *inference*, when the question is "which manifold does
+        this sample live on" and the answer should be one manifold rather than a
+        blend of all of them.  Not differentiable through the choice (``argmax``
+        has no gradient), so do not train on this directly without a
+        straight-through or Gumbel estimator.
+
+        Args:
+            outputs: ``(K, ..., P)`` branch outputs, as returned by ``forward``.
+            manifold_logits: ``(..., K)`` raw gating logits.
+
+        Returns:
+            pred: ``(..., P)`` output of the arg-max branch.
+            gate: ``(..., K)`` gating probabilities.
+            choice: ``(...)`` index of the chosen branch, in ``[0, K)``.
+        """
+        gate = manifold_logits.softmax(dim=-1)
+        choice = gate.argmax(dim=-1)                  # (...)
+
+        # Gather along the branch axis: index must match outputs' rank.
+        index = choice.unsqueeze(0).unsqueeze(-1).expand(1, *choice.shape, outputs.shape[-1])
+        pred = outputs.gather(0, index).squeeze(0)
+        return pred, gate, choice
+
+    @staticmethod
+    def gated_loss(
+        per_branch_losses: Tensor, manifold_logits: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """Gate-weighted mean of *per-branch* losses: ``sum_k gate_k * loss_k``.
+
+        The counterpart to ``combine`` on the loss side, and the objective that
+        makes ``select`` coherent.  Weighting the losses trains every branch to
+        solve the task *on its own* -- scaled by how much the gate favours it --
+        whereas putting the mixture inside a single loss
+        (``loss(sum_k gate_k * out_k, y)``) only requires the blend to be right
+        and lets the branches specialise into complementary pieces that are each
+        useless alone.  Since inference commits to one branch, the branches have
+        to be individually competent, so the loss must be the outer sum.
+
+        The gate is differentiable here, and its gradient moves mass toward
+        whichever branches have the lowest loss.  Left alone that drives the gate
+        to collapse onto a single branch -- desirable when the point is to *pick*
+        a manifold, but add an entropy bonus on ``gate`` if a diffuse gate is
+        wanted instead.
+
+        Args:
+            per_branch_losses: ``(K, ...)`` per-sample loss for each branch, with
+                the branch axis leading, matching ``forward``'s output layout.
+            manifold_logits: ``(..., K)`` raw gating logits.
+
+        Returns:
+            loss: scalar, averaged over every non-branch dimension.
+            gate: ``(..., K)`` gating probabilities.
+        """
+        if per_branch_losses.shape[0] != manifold_logits.shape[-1]:
+            raise ValueError(
+                f"expected per-branch losses with leading axis "
+                f"{manifold_logits.shape[-1]}, got {tuple(per_branch_losses.shape)}"
+            )
+        gate = manifold_logits.softmax(dim=-1)
+        weights = gate.movedim(-1, 0)                 # (K, ...)
+        return (weights * per_branch_losses).sum(dim=0).mean(), gate
