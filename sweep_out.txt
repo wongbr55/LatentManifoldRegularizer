@@ -1,0 +1,40 @@
+device=cuda steps=3000 seeds=2 length_scale=0.25 samples=2048
+  [    30s] res=0 d=2 flat-3     mse=0.0036
+  [    69s] res=0 d=2 sphere-2   mse=0.0033
+  [   121s] res=0 d=2 flat-3x3   mse=0.0030
+  [   198s] res=0 d=2 mixture-3  mse=0.0089
+  [   229s] res=0 d=3 flat-3     mse=0.0008
+  [   267s] res=0 d=3 sphere-2   mse=0.0352
+  [   320s] res=0 d=3 flat-3x3   mse=0.0005
+  [   402s] res=0 d=3 mixture-3  mse=0.0034
+  [   429s] res=1 d=2 flat-3     mse=0.0128
+  [   462s] res=1 d=2 sphere-2   mse=0.1083
+  [   509s] res=1 d=2 flat-3x3   mse=0.0044
+  [   586s] res=1 d=2 mixture-3  mse=0.0088
+  [   619s] res=1 d=3 flat-3     mse=0.0051
+  [   659s] res=1 d=3 sphere-2   mse=0.0400
+  [   716s] res=1 d=3 flat-3x3   mse=0.0014
+  [   801s] res=1 d=3 mixture-3  mse=0.0043
+
+block      depth arm                test MSE  train MSE    align    params
+--------------------------------------------------------------------------
+plain          2 flat-3       0.0036 +-0.0000     0.0018    10.2d    68,620
+plain          2 sphere-2     0.0033 +-0.0001     0.0020     4.8d    68,620
+plain          2 flat-3x3     0.0030 +-0.0002     0.0012       --    70,676
+plain          2 mixture-3    0.0089 +-0.0018     0.0027       --    71,704
+plain          3 flat-3       0.0008 +-0.0002     0.0003    10.0d   101,644
+plain          3 sphere-2     0.0352 +-0.0047     0.0090    35.7d   101,644
+plain          3 flat-3x3     0.0005 +-0.0001     0.0002       --   103,700
+plain          3 mixture-3    0.0034 +-0.0010     0.0006       --   104,728
+residual       2 flat-3       0.0128 +-0.0061     0.0065    13.6d    68,620
+residual       2 sphere-2     0.1083 +-0.0392     0.0578    31.9d    68,620
+residual       2 flat-3x3     0.0044 +-0.0003     0.0019       --    70,676
+residual       2 mixture-3    0.0088 +-0.0039     0.0035       --    71,704
+residual       3 flat-3       0.0051 +-0.0028     0.0014    20.1d   101,644
+residual       3 sphere-2     0.0400 +-0.0058     0.0111    41.3d   101,644
+residual       3 flat-3x3     0.0014 +-0.0000     0.0004       --   103,700
+residual       3 mixture-3    0.0043 +-0.0008     0.0009       --   104,728
+
+flat-3 minus sphere-2 (positive = sphere wins):
+  plain     d=2: +0.0003   d=3: -0.0345
+  residual  d=2: -0.0954   d=3: -0.0349
