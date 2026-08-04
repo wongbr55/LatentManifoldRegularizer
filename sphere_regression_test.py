@@ -92,7 +92,7 @@ class Config:
     encoder_out: int = 128
     decoder_in: int = 128
     encoder_depth: int = 2
-    decoder_depth: int = 1
+    decoder_depth: int = 2
     residual: bool = False     # skip connections; only possible at uniform width
 
     # optimisation
