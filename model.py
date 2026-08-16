@@ -166,3 +166,43 @@ class ManifoldModelFramework(nn.Module):
         gate = manifold_logits.softmax(dim=-1)
         weights = gate.movedim(-1, 0)                 # (K, ...)
         return (weights * per_branch_losses).sum(dim=0).mean(), gate
+
+
+class ManifoldModelFrameworkV2(ManifoldModelFramework):
+    def __init__(self, manifolds, encoder, decoder, encoder_out, decoder_in):
+        super().__init__(manifolds, encoder, decoder, encoder_out, decoder_in)
+        if len(manifolds) == 0:
+            raise ValueError(f"Number of target manifolds must be >= 1, got 0")
+        if encoder is None or decoder is None:
+            raise ValueError(f"Encoder and decoder must not be None")
+        if encoder_out < 1 or decoder_in < 1:
+            raise ValueError(
+                f"encoder_out and decoder_in must be >= 1, got {encoder_out} and {decoder_in}"
+            )
+        # self.manifolds = manifolds
+        # self.num_manifolds = len(manifolds)
+        # self.encoder = encoder
+        # self.decoder = decoder
+        # self.encoder_out = encoder_out
+        # self.decoder_in = decoder_in
+        
+        self.to_ambient = nn.ModuleList(
+            nn.Linear(self.encoder_out, m.ambient_dim) for m in manifolds
+        )
+        sum_ambient = sum([m.ambient_dim for m in self.manifolds])
+        self.from_ambient = nn.Linear(sum_ambient, self.decoder_in)
+
+    
+    def forward(self, x):
+        x = self.encoder(x)
+        outputs = []
+        for manifold, to_ambient in zip(
+            self.manifolds, self.to_ambient
+        ):
+            z = to_ambient(x)
+            z = manifold.project(z)
+            outputs.append(z)
+        
+        z = torch.cat(outputs, dim=-1)
+        z = self.from_ambient(z)
+        return self.decoder(z)
