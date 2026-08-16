@@ -55,6 +55,15 @@ class Manifold(ABC):
     @abstractmethod
     def contains(self, x: Tensor, atol: float = 1e-5) -> Tensor:
         """Boolean mask of shape ``x.shape[:-1]``: does each row lie on M?"""
+    
+    @abstractmethod
+    def sample(
+        self,
+        n_samples: int,
+        device: torch.device | str = "cuda",
+        dtype: torch.dtype = torch.float32,
+    ) -> Tensor:
+        """Sample n random points from a chosen distribution on the manifold."""
 
     def _check_ambient(self, x: Tensor) -> None:
         if x.shape[-1] != self.ambient_dim:
@@ -101,6 +110,23 @@ class Sphere(Manifold):
     def contains(self, x: Tensor, atol: float = 1e-5) -> Tensor:
         self._check_ambient(x)
         return (x.norm(dim=-1) - self.radius).abs() <= atol
+    
+    def sample(
+        self,
+        n_samples: int,
+        device="cpu",
+        dtype=torch.float32,
+        ):
+        x = torch.randn(
+            n_samples,
+            self.ambient_dim,
+            device=device,
+            dtype=dtype,
+        )
+        self._check_ambient(x)
+        x = x / x.norm(dim=-1, keepdim=True)
+
+        return self.radius * x
 
     def __repr__(self) -> str:
         return f"Sphere(dim={self.dim}, radius={self.radius})"
@@ -151,6 +177,22 @@ class Hyperbolic(Manifold):
     def contains(self, x: Tensor, atol: float = 1e-5) -> Tensor:
         self._check_ambient(x)
         return x.norm(dim=-1) < self.max_norm + atol
+
+    def sample(
+        self,
+        n_samples: int,
+        device="cuda",
+        dtype=torch.float32,
+        scale=1.0,
+    ):
+        x = scale * torch.randn(
+            n_samples,
+            self.ambient_dim,
+            device=device,
+            dtype=dtype,
+        )
+        self._check_ambient(x)
+        return self.project(x)
 
     def __repr__(self) -> str:
         return f"Hyperbolic(dim={self.dim}, curvature={self.curvature})"
@@ -227,6 +269,23 @@ class Torus(Manifold):
         pairs = x.unflatten(-1, (self.dim, 2))
         err = (pairs.norm(dim=-1) - self._radii_like(x)).abs()
         return (err <= atol).all(dim=-1)
+    
+
+    def sample(
+        self,
+        n_samples: int,
+        device="cpu",
+        dtype=torch.float32,
+    ):
+        theta = 2 * torch.pi * torch.rand(
+            n_samples,
+            self.dim,
+            device=device,
+            dtype=dtype,
+        )
+        res = self.from_angles(theta)
+        self._check_ambient(res)
+        return res
 
     def _radii_like(self, x: Tensor) -> Tensor:
         return self.radii.to(device=x.device, dtype=x.dtype)
