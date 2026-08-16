@@ -124,6 +124,9 @@ class FlatEuclidean(Manifold):
         self._check_ambient(x)
         return torch.ones(x.shape[:-1], dtype=torch.bool, device=x.device)
 
+    def sample(self, n):
+        return torch.randn(n, self.dim)
+
     def __repr__(self) -> str:
         return f"FlatEuclidean(dim={self.dim})"
 
@@ -315,17 +318,19 @@ def mlp(
 ARMS: dict[str, tuple[str, list[Manifold]]] = {
     # name              description                              manifolds
     "flat-3":       ("unconstrained R^3 bottleneck",             [FlatEuclidean(3)]),
-    "sphere-2":     ("S^2 in R^3 (matches the data exactly)",    [Sphere(2)]),
-    "sphere-3":     ("S^3 in R^4 (one dim too many)",            [Sphere(3)]),
-    "hyperbolic-3": ("Poincare ball H^3 (wrong geometry)",       [Hyperbolic(3)]),
-    "torus-2":      ("flat torus T^2 in R^4 (wrong topology)",   [Torus(2)]),
+    "flat-2":       ("unconstrained R^3 bottleneck",             [FlatEuclidean(2)]),
+    "sphere-1":     ("S^1 in R^2",                               [Sphere(1)]),
+    "sphere-2":     ("S^2 in R^3",                               [Sphere(2)]),
+    "hyperbolic-3": ("Poincare ball H^3",                        [Hyperbolic(3)]),
+    "torus-2":      ("flat torus T^2 in R^4 ",                   [Torus(2)]),
+    "torus-1":      ("flat torus T^2 in R^4 ",                   [Torus(1)]),
     "flat-16":      ("unconstrained R^16, wide bottleneck",      [FlatEuclidean(16)]),
     "sphere-15":    ("S^15 in R^16, wide bottleneck",            [Sphere(15)]),
-    "flat-3x3":     ("3 unconstrained branches (capacity ctrl)", [FlatEuclidean(3)] * 3),
+    "flat-3x3":     ("3 unconstrained branches",                 [FlatEuclidean(3)] * 3),
     "mixture-3":    ("gated S^3 + H^3 + T^3, all intrinsic 3",   [Sphere(3), Hyperbolic(3), Torus(3)]),
 }
 
-DEFAULT_ARMS = ["flat-3", "sphere-2", "sphere-3", "hyperbolic-3", "torus-2", "flat-3x3", "mixture-3"]
+DEFAULT_ARMS = ["flat-2", "flat-3", "sphere-1", "sphere-2", "hyperbolic-3", "torus-1", "torus-2"]
 
 
 def build(cfg: Config, arm: str) -> ManifoldModelFramework:
@@ -383,6 +388,11 @@ class Result:
     alignment: float | None
     gate: list[float]
     params: int
+    
+    train_loss_curve: list[float]
+    test_loss_curve: list[float]
+    predictions: list
+    targets: list
 
 
 def branch_mse(outputs: Tensor, y: Tensor) -> Tensor:
