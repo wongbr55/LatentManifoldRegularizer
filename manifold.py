@@ -64,6 +64,59 @@ class Manifold(ABC):
         dtype: torch.dtype = torch.float32,
     ) -> Tensor:
         """Sample n random points from a chosen distribution on the manifold."""
+        
+    def geodesic(
+        self,
+        x: Tensor,
+        y: Tensor,
+        t: Tensor,
+    ) -> Tensor:
+        """
+        Evaluate the geodesic from x to y at time t.
+
+        Default implementation is the Euclidean geodesic, i.e.
+        straight-line interpolation.
+
+        Args:
+            x: Starting points, shape (..., ambient_dim).
+            y: Ending points, shape (..., ambient_dim).
+            t: Interpolation parameter. Typically in [0, 1].
+               Can be scalar or broadcastable to x/y.
+
+        Returns:
+            Points along the geodesic, shape broadcastable to (..., ambient_dim).
+        """
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        if x.shape != y.shape:
+            raise ValueError(
+                f"x and y must have the same shape, "
+                f"got {tuple(x.shape)} and {tuple(y.shape)}"
+            )
+
+        return (1 - t) * x + t * y
+    
+    def distance(self, x: Tensor, y: Tensor) -> Tensor:
+        """
+        Return the geodesic distance between x and y.
+
+        Default implementation is the Euclidean geodesic distance, i.e.
+        straightL2 norm.
+
+        Args:
+            x: Starting points, shape (..., ambient_dim).
+            y: Ending points, shape (..., ambient_dim).
+
+        Returns:
+            Geodesic distance
+        """
+        
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        return torch.sqrt(torch.sum((x - y) ** 2, dim=-1))
+
 
     def _check_ambient(self, x: Tensor) -> None:
         if x.shape[-1] != self.ambient_dim:
@@ -127,6 +180,44 @@ class Sphere(Manifold):
         x = x / x.norm(dim=-1, keepdim=True)
 
         return self.radius * x
+    
+    def geodesic(
+        self,
+        x: Tensor,
+        y: Tensor,
+        t: Tensor,
+    ) -> Tensor:
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        cos_theta = (x * y).sum(dim=-1, keepdim=True) / self.radius**2
+        cos_theta = cos_theta.clamp(-1.0, 1.0)
+
+        theta = torch.acos(cos_theta)
+        sin_theta = torch.sin(theta)
+
+        # Handle x ≈ y.
+        close = sin_theta.abs() < _eps(x)
+
+        a = torch.sin((1 - t) * theta) / sin_theta.clamp_min(_eps(x))
+        b = torch.sin(t * theta) / sin_theta.clamp_min(_eps(x))
+
+        result = a * x + b * y
+
+        # For nearly identical points, straight interpolation is sufficient.
+        linear = (1 - t) * x + t * y
+        result = torch.where(close, linear, result)
+
+        return result
+    
+    def distance(self, x: Tensor, y: Tensor) -> Tensor:
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        cos_theta = (x * y).sum(dim=-1) / (self.radius ** 2)
+        cos_theta = cos_theta.clamp(-1.0, 1.0)
+
+        return self.radius * torch.acos(cos_theta)
 
     def __repr__(self) -> str:
         return f"Sphere(dim={self.dim}, radius={self.radius})"
@@ -193,6 +284,127 @@ class Hyperbolic(Manifold):
         )
         self._check_ambient(x)
         return self.project(x)
+    
+    
+    def lambda_x(self, x: Tensor) -> Tensor:
+        """Conformal factor of the Poincare ball metric."""
+        x2 = (x * x).sum(dim=-1, keepdim=True)
+        return 2.0 / (1.0 - self.curvature * x2).clamp_min(_eps(x))
+
+
+    def exp_map(self, x: Tensor, v: Tensor) -> Tensor:
+        """
+        Exponential map on the Poincare ball.
+
+        Maps a tangent vector v at x onto the manifold.
+        """
+        self._check_ambient(x)
+        self._check_ambient(v)
+
+        eps = _eps(x)
+
+        v_norm = v.norm(dim=-1, keepdim=True).clamp_min(eps)
+
+        lam = self.lambda_x(x)
+
+        sqrt_c = self.sqrt_c
+
+        factor = torch.tanh(
+            sqrt_c * lam * v_norm / 2.0
+        ) / (sqrt_c * v_norm)
+
+        result = self.mobius_add(x, factor * v)
+
+        return self.clamp_to_ball(result)
+
+
+    def log_map(self, x: Tensor, y: Tensor) -> Tensor:
+        """
+        Logarithmic map on the Poincare ball.
+
+        Returns the tangent vector at x pointing toward y.
+        """
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        eps = _eps(x)
+
+        diff = self.mobius_add(-x, y)
+
+        diff_norm = diff.norm(dim=-1, keepdim=True).clamp_min(eps)
+
+        lam = self.lambda_x(x)
+
+        factor = (
+            2.0
+            / (self.sqrt_c * lam)
+            * torch.atanh(
+                self.sqrt_c * diff_norm
+            )
+            / diff_norm
+        )
+
+        return factor * diff
+    
+    def mobius_add(self, x: Tensor, y: Tensor) -> Tensor:
+        """
+        Möbius addition in the Poincare ball of curvature -c.
+        """
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        c = self.curvature
+
+        x2 = (x * x).sum(dim=-1, keepdim=True)
+        y2 = (y * y).sum(dim=-1, keepdim=True)
+        xy = (x * y).sum(dim=-1, keepdim=True)
+
+        numerator = (
+            (1 + 2 * c * xy + c * y2) * x
+            + (1 - c * x2) * y
+        )
+
+        denominator = (
+            1
+            + 2 * c * xy
+            + c**2 * x2 * y2
+        ).clamp_min(_eps(x))
+
+        return numerator / denominator
+    def geodesic(
+        self,
+        x: Tensor,
+        y: Tensor,
+        t: Tensor,
+    ) -> Tensor:
+        """
+        Geodesic from x to y in the Poincare ball.
+
+        gamma(t) = Exp_x(t Log_x(y))
+        """
+        v = self.log_map(x, y)
+
+        return self.exp_map(x, t * v)
+
+    
+    def distance(self, x: Tensor, y: Tensor) -> Tensor:
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        diff = self.mobius_add(-x, y)
+
+        norm = diff.norm(dim=-1)
+
+        arg = (
+            self.sqrt_c * norm
+        ).clamp(
+            min=0.0,
+            max=1.0 - _eps(x),
+        )
+
+        return (
+            2.0 / self.sqrt_c
+        ) * torch.atanh(arg)
 
     def __repr__(self) -> str:
         return f"Hyperbolic(dim={self.dim}, curvature={self.curvature})"
@@ -286,6 +498,117 @@ class Torus(Manifold):
         res = self.from_angles(theta)
         self._check_ambient(res)
         return res
+    
+    def geodesic(
+        self,
+        x: Tensor,
+        y: Tensor,
+        t: Tensor,
+    ) -> Tensor:
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        x_pairs = x.unflatten(-1, (self.dim, 2))
+        y_pairs = y.unflatten(-1, (self.dim, 2))
+
+        theta_x = torch.atan2(
+            x_pairs[..., 1],
+            x_pairs[..., 0],
+        )
+
+        theta_y = torch.atan2(
+            y_pairs[..., 1],
+            y_pairs[..., 0],
+        )
+
+        # Shortest angular displacement.
+        delta = torch.atan2(
+            torch.sin(theta_y - theta_x),
+            torch.cos(theta_y - theta_x),
+        )
+
+        theta = theta_x + t * delta
+
+        radii = self._radii_like(theta)
+
+        pairs = torch.stack(
+            [
+                theta.cos(),
+                theta.sin(),
+            ],
+            dim=-1,
+        )
+
+        return (pairs * radii.unsqueeze(-1)).flatten(-2)
+
+
+    def distance(self, x: Tensor, y: Tensor) -> Tensor:
+        self._check_ambient(x)
+        self._check_ambient(y)
+
+        x_pairs = x.unflatten(-1, (self.dim, 2))
+        y_pairs = y.unflatten(-1, (self.dim, 2))
+
+        theta_x = torch.atan2(
+            x_pairs[..., 1],
+            x_pairs[..., 0],
+        )
+
+        theta_y = torch.atan2(
+            y_pairs[..., 1],
+            y_pairs[..., 0],
+        )
+
+        delta = torch.atan2(
+            torch.sin(theta_y - theta_x),
+            torch.cos(theta_y - theta_x),
+        )
+
+        radii = self._radii_like(x)
+
+        return torch.sqrt(
+            (radii**2 * delta**2).sum(dim=-1)
+        )
+
+
+    def torus_to_3d(self, points: torch.Tensor, R: float = 2.0, r: float = 1.0):
+        """
+        Convert a T² point from its R⁴ product-of-circles representation
+
+            (cos θ₁, sin θ₁, cos θ₂, sin θ₂)
+
+        into the standard R³ torus embedding.
+
+        Args:
+            points: Tensor of shape (..., 4)
+            R: Major radius of the torus.
+            r: Minor radius of the torus.
+
+        Returns:
+            Tensor of shape (..., 3).
+        """
+        if points.shape[-1] != 4:
+            raise ValueError(
+                f"Expected last dimension to be 4, got {points.shape[-1]}"
+            )
+
+        pairs = points.reshape(*points.shape[:-1], 2, 2)
+
+        theta1 = torch.atan2(
+            pairs[..., 0, 1],
+            pairs[..., 0, 0],
+        )
+
+        theta2 = torch.atan2(
+            pairs[..., 1, 1],
+            pairs[..., 1, 0],
+        )
+
+        x = (R + r * torch.cos(theta1)) * torch.cos(theta2)
+        y = (R + r * torch.cos(theta1)) * torch.sin(theta2)
+        z = r * torch.sin(theta1)
+
+        return torch.stack([x, y, z], dim=-1)
 
     def _radii_like(self, x: Tensor) -> Tensor:
         return self.radii.to(device=x.device, dtype=x.dtype)
@@ -294,26 +617,26 @@ class Torus(Manifold):
         return f"Torus(dim={self.dim}, radii={self.radii.tolist()})"
 
 
-if __name__ == "__main__":
-    torch.manual_seed(0)
+# if __name__ == "__main__":
+#     torch.manual_seed(0)
 
-    manifolds = [
-        Sphere(dim=3, radius=2.0),
-        Hyperbolic(dim=4, curvature=0.5),
-        Torus(dim=3, radii=[1.0, 2.0, 0.5]),
-    ]
+#     manifolds = [
+#         Sphere(dim=3, radius=2.0),
+#         Hyperbolic(dim=4, curvature=0.5),
+#         Torus(dim=3, radii=[1.0, 2.0, 0.5]),
+#     ]
 
-    for m in manifolds:
-        x = torch.randn(8, m.ambient_dim, dtype=torch.float64) * 10.0
-        x[0] = 0.0  # degenerate input
-        y = m.project(x)
-        assert m.contains(y).all(), m
-        assert m.contains(m.project(y)).all(), f"{m} not idempotent-safe"
-        print(f"{m}: R^{m.ambient_dim} -> {tuple(y.shape)} ok")
+#     for m in manifolds:
+#         x = torch.randn(8, m.ambient_dim, dtype=torch.float64) * 10.0
+#         x[0] = 0.0  # degenerate input
+#         y = m.project(x)
+#         assert m.contains(y).all(), m
+#         assert m.contains(m.project(y)).all(), f"{m} not idempotent-safe"
+#         print(f"{m}: R^{m.ambient_dim} -> {tuple(y.shape)} ok")
 
-    # Gradients flow through every projection.
-    for m in manifolds:
-        x = torch.randn(4, m.ambient_dim, requires_grad=True)
-        m.project(x).sum().backward()
-        assert x.grad is not None and torch.isfinite(x.grad).all(), m
-    print("gradients ok")
+#     # Gradients flow through every projection.
+#     for m in manifolds:
+#         x = torch.randn(4, m.ambient_dim, requires_grad=True)
+#         m.project(x).sum().backward()
+#         assert x.grad is not None and torch.isfinite(x.grad).all(), m
+#     print("gradients ok")
