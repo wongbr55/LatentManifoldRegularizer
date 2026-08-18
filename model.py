@@ -206,3 +206,19 @@ class ManifoldModelFrameworkV2(ManifoldModelFramework):
         z = torch.cat(outputs, dim=-1)
         z = self.from_ambient(z)
         return self.decoder(z)
+    
+    def latent_representations(self, x):
+        """Returns the learnt latent representations for x
+        
+        Returns in form [z1, z2, z3, ...]
+        """
+        x = self.encoder(x)
+        outputs = []
+        for manifold, to_ambient in zip(
+            self.manifolds, self.to_ambient
+        ):
+            z = to_ambient(x)
+            z = manifold.project(z)
+            outputs.append(z)
+        
+        return outputs
