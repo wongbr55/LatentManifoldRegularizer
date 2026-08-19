@@ -4,6 +4,39 @@ from torch import Tensor
 from torch import nn
 
 
+class ManifoldAttention(nn.Module):
+    def __init__(self, encoder_out: int, attention_dim: int, num_manifolds: int):
+        super().__init__()
+
+        self.key = nn.Linear(encoder_out, attention_dim)
+
+        # One learned query per manifold
+        self.queries = nn.Parameter(
+            torch.randn(num_manifolds, attention_dim)
+        )
+
+        self.scale = attention_dim ** -0.5
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        x: (..., encoder_out)
+
+        Returns:
+            manifold_logits: (..., num_manifolds)
+        """
+        keys = self.key(x)  # (..., attention_dim)
+
+        # (..., 1, attention_dim)
+        keys = keys.unsqueeze(-2)
+
+        # (1, num_manifolds, attention_dim)
+        queries = self.queries.unsqueeze(0)
+
+        # (..., num_manifolds)
+        scores = (keys * queries).sum(dim=-1) * self.scale
+
+        return scores
+
 class ManifoldModelFramework(nn.Module):
     
     """Simple implementation of neural network with induced manifold representation in hidden/latent space
@@ -26,7 +59,8 @@ class ManifoldModelFramework(nn.Module):
         self.encoder_out = encoder_out
         self.decoder_in = decoder_in
 
-        self.prob_manifold = nn.Linear(self.encoder_out, self.num_manifolds)
+        self.prob_manifold = ManifoldAttention(encoder_out=self.encoder_out, attention_dim=64, num_manifolds=self.num_manifolds)
+                
 
         # One head per manifold, mapping the encoder output into that manifold's
         # ambient space so ``manifold.project`` can be applied to it, and one head
@@ -168,6 +202,22 @@ class ManifoldModelFramework(nn.Module):
         return (weights * per_branch_losses).sum(dim=0).mean(), gate
 
 
+    def latent_representations(self, x):
+        """Returns the learnt latent representations for x
+        
+        Returns in form [z1, z2, z3, ...]
+        """
+        x = self.encoder(x)
+        outputs = []
+        for manifold, to_ambient in zip(
+            self.manifolds, self.to_ambient
+        ):
+            z = to_ambient(x)
+            z = manifold.project(z)
+            outputs.append(z)
+        
+        return outputs
+
 class ManifoldModelFrameworkV2(ManifoldModelFramework):
     def __init__(self, manifolds, encoder, decoder, encoder_out, decoder_in):
         super().__init__(manifolds, encoder, decoder, encoder_out, decoder_in)
@@ -206,19 +256,3 @@ class ManifoldModelFrameworkV2(ManifoldModelFramework):
         z = torch.cat(outputs, dim=-1)
         z = self.from_ambient(z)
         return self.decoder(z)
-    
-    def latent_representations(self, x):
-        """Returns the learnt latent representations for x
-        
-        Returns in form [z1, z2, z3, ...]
-        """
-        x = self.encoder(x)
-        outputs = []
-        for manifold, to_ambient in zip(
-            self.manifolds, self.to_ambient
-        ):
-            z = to_ambient(x)
-            z = manifold.project(z)
-            outputs.append(z)
-        
-        return outputs
