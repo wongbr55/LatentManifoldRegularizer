@@ -322,6 +322,7 @@ ARMS: dict[str, tuple[str, list[Manifold]]] = {
     "sphere-1":     ("S^1 in R^2",                               [Sphere(1)]),
     "sphere-2":     ("S^2 in R^3",                               [Sphere(2)]),
     "hyperbolic-3": ("Poincare ball H^3",                        [Hyperbolic(3)]),
+    "hyperbolic-2": ("Poincare ball H^2",                        [Hyperbolic(2)]),
     "torus-2":      ("flat torus T^2 in R^4 ",                   [Torus(2)]),
     "torus-1":      ("flat torus T^2 in R^4 ",                   [Torus(1)]),
     "flat-16":      ("unconstrained R^16, wide bottleneck",      [FlatEuclidean(16)]),
@@ -330,7 +331,7 @@ ARMS: dict[str, tuple[str, list[Manifold]]] = {
     "mixture-3":    ("gated S^3 + H^3 + T^3, all intrinsic 3",   [Sphere(3), Hyperbolic(3), Torus(3)]),
 }
 
-DEFAULT_ARMS = ["flat-2", "flat-3", "sphere-1", "sphere-2", "hyperbolic-3", "torus-1", "torus-2"]
+DEFAULT_ARMS = ["flat-2", "sphere-1", "sphere-2", "hyperbolic-2", "torus-2"]
 
 
 def build(cfg: Config, arm: str) -> ManifoldModelFramework:
