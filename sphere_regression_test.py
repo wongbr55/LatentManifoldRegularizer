@@ -93,6 +93,7 @@ class Config:
     decoder_in: int = 128
     encoder_depth: int = 2
     decoder_depth: int = 2
+    attention_dim: int = 64
     residual: bool = False     # skip connections; only possible at uniform width
 
     # optimisation
@@ -327,11 +328,12 @@ ARMS: dict[str, tuple[str, list[Manifold]]] = {
     "torus-1":      ("flat torus T^2 in R^4 ",                   [Torus(1)]),
     "flat-16":      ("unconstrained R^16, wide bottleneck",      [FlatEuclidean(16)]),
     "sphere-15":    ("S^15 in R^16, wide bottleneck",            [Sphere(15)]),
-    "flat-3x3":     ("3 unconstrained branches",                 [FlatEuclidean(3)] * 3),
-    "mixture-3":    ("gated S^3 + H^3 + T^3, all intrinsic 3",   [Sphere(3), Hyperbolic(3), Torus(3)]),
+    "flat-2x3":     ("3 unconstrained branches",                 [FlatEuclidean(2)] * 3),
+    "mixture-3":    ("gated S^2 + H^2 + T^2, all intrinsic 3",   [Sphere(2), Hyperbolic(2), Torus(2)]),
+    "mixture-sphere":    ("gated S^2 * 3",   [Sphere(2), Sphere(2), Sphere(2)]),
 }
 
-DEFAULT_ARMS = ["flat-2", "sphere-1", "sphere-2", "hyperbolic-2", "torus-2"]
+DEFAULT_ARMS = ["flat-2", "sphere-1", "sphere-2", "hyperbolic-2", "torus-2", "flat-2x3", "mixture-3", "mixture-sphere"]
 
 
 def build(cfg: Config, arm: str) -> ManifoldModelFramework:
@@ -342,6 +344,7 @@ def build(cfg: Config, arm: str) -> ManifoldModelFramework:
         decoder=mlp(cfg.decoder_in, cfg.out_dim, cfg.hidden, cfg.decoder_depth, cfg.residual),
         encoder_out=cfg.encoder_out,
         decoder_in=cfg.decoder_in,
+        attention_dim=cfg.attention_dim
     ).to(cfg.device)
 
 
