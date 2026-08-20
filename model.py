@@ -42,7 +42,7 @@ class ManifoldModelFramework(nn.Module):
     """Simple implementation of neural network with induced manifold representation in hidden/latent space
     """
     
-    def __init__(self, manifolds: list[Manifold], encoder: nn.Module, decoder: nn.Module, encoder_out: int, decoder_in: int):
+    def __init__(self, manifolds: list[Manifold], encoder: nn.Module, decoder: nn.Module, encoder_out: int, decoder_in: int, attention_dim: int):
         super().__init__()
         if len(manifolds) == 0:
             raise ValueError(f"Number of target manifolds must be >= 1, got 0")
@@ -59,7 +59,7 @@ class ManifoldModelFramework(nn.Module):
         self.encoder_out = encoder_out
         self.decoder_in = decoder_in
 
-        self.prob_manifold = ManifoldAttention(encoder_out=self.encoder_out, attention_dim=64, num_manifolds=self.num_manifolds)
+        self.prob_manifold = ManifoldAttention(encoder_out=self.encoder_out, attention_dim=attention_dim, num_manifolds=self.num_manifolds)
                 
 
         # One head per manifold, mapping the encoder output into that manifold's
