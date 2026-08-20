@@ -72,7 +72,7 @@ def generate_swiss_roll_dataset(
         dim=1
     )
 
-    return x, x
+    return x, target
 
 
 class RandomObservationMap(nn.Module):
@@ -193,7 +193,7 @@ def buildv2(cfg: Config, manifolds: list[Manifold], encoder_in: int) -> Manifold
         decoder_in=cfg.decoder_in,
     ).to(cfg.device)
 
-def run_onev1(cfg: Config, arm: str, seed: int, training_dataset: Dataset, test_dataset: Dataset, model: ManifoldModelFramework) -> Result:
+def run_onev1(cfg: Config, arm: str, seed: int, training_dataset: Dataset, test_dataset: Dataset, model: ManifoldModelFramework, X: Tensor, Z: Tensor, model_name: str, savedir: str) -> Result:
     """Train each branch to solve the task alone, evaluate on the arg-max branch.
 
     The objective is ``sum_k gate_k * mse_k`` -- the gate weighting *losses*, not
@@ -290,7 +290,6 @@ def run_onev1(cfg: Config, arm: str, seed: int, training_dataset: Dataset, test_
 
     with torch.no_grad():
         for x_test, y_test in test_loader:
-
             device = next(model.parameters()).device
             x_test = x_test.to(device)
             y_test = y_test.to(device)
@@ -307,6 +306,31 @@ def run_onev1(cfg: Config, arm: str, seed: int, training_dataset: Dataset, test_
             # V2
             # outputs = model(x_test)
             # test_mse = F.mse_loss(outputs, y_test)
+         
+        visualize_model_outputs_no_comparison(model, X, model_name, savedir)
+        
+        D_true = pairwise_product_distance(
+            [Z],
+            [FlatEuclidean(Z.shape[1])],
+        )
+        
+        z_learned_components = model.latent_representations(X)
+
+        D_learned = pairwise_product_distance(
+            z_learned_components,
+            model.manifolds,
+        )
+        
+        
+        knn_metrics = knn_preservation(
+            D_true,
+            D_learned,
+            ks=[5, 10, 20, 50],
+        )
+        distance_metrics = geodesic_preservation(savedir, model_name, D_true, D_learned)
+        print(f"TESTING WITH MANIFOLD CONFIG {arm}")
+        print_analysis_results({"knn_metrics" : knn_metrics, "distance_metrics" : distance_metrics}, 0)
+        
             
     final_predictions = torch.cat(final_predictions, dim=0)
     final_targets = torch.cat(final_targets, dim=0)
@@ -916,6 +940,242 @@ def visualize_model_outputs(
 
         print(f"Saved: {filename}")
     
+    
+def visualize_model_outputs_no_comparison(
+    model: ManifoldModelFramework,
+    X: Tensor,
+    model_name: str,
+    save_dir: str = "/scratch/wongbr55/LatentManifoldRegularizer",
+    n_frames: int = 60,
+    fps: int = 10,
+    max_points: int = 5000,
+):
+    """
+    Visualize the learned manifold representations produced by the model.
+
+    Each manifold gets its own rotating GIF.
+
+    Args:
+        model:
+            Trained ManifoldModelFrameworkV2.
+
+        X:
+            Input dataset.
+
+        model_name:
+            Name used in the output filename.
+
+        save_dir:
+            Directory where GIFs are saved.
+
+        n_frames:
+            Number of frames in each rotating GIF.
+
+        fps:
+            Frames per second.
+
+        max_points:
+            Maximum number of points to display.
+    """
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    model.eval()
+
+    # ---------------------------------------------------------
+    # Get learned manifold representations
+    # ---------------------------------------------------------
+
+    with torch.no_grad():
+
+        h = model.encoder(X)
+
+        manifold_outputs = []
+
+        for manifold, to_ambient in zip(
+            model.manifolds,
+            model.to_ambient,
+        ):
+
+            z = to_ambient(h)
+            z = manifold.project(z)
+
+            manifold_outputs.append(z.detach().cpu())
+
+    # ---------------------------------------------------------
+    # Subsample
+    # ---------------------------------------------------------
+
+    n = manifold_outputs[0].shape[0]
+
+    if n > max_points:
+
+        indices = np.random.choice(
+            n,
+            size=max_points,
+            replace=False,
+        )
+
+        indices = torch.from_numpy(indices)
+
+    else:
+
+        indices = torch.arange(n)
+
+    # ---------------------------------------------------------
+    # Plot each manifold separately
+    # ---------------------------------------------------------
+
+    for i, (manifold, latent) in enumerate(
+        zip(
+            model.manifolds,
+            manifold_outputs,
+        )
+    ):
+
+        points = latent[indices]
+
+        ambient_dim = points.shape[-1]
+
+        # -----------------------------------------------------
+        # Convert to 3D for visualization
+        # -----------------------------------------------------
+
+        if ambient_dim == 3:
+
+            points_3d = points.numpy()
+
+        elif ambient_dim > 3 and isinstance(manifold, Torus):
+
+            # Torus-specific 3D visualization.
+            points_3d = manifold.torus_to_3d(
+                points
+            ).numpy()
+
+        elif ambient_dim > 3:
+
+            # PCA purely for visualization.
+            pca = PCA(n_components=3)
+
+            points_3d = pca.fit_transform(
+                points.numpy()
+            )
+
+        elif ambient_dim == 2:
+
+            # Embed 2D into 3D.
+            points_3d = np.zeros(
+                (points.shape[0], 3)
+            )
+
+            points_3d[:, :2] = points.numpy()
+
+        else:
+
+            raise ValueError(
+                f"Cannot visualize ambient dimension "
+                f"{ambient_dim} for {repr(manifold)}"
+            )
+
+        # -----------------------------------------------------
+        # Create figure
+        # -----------------------------------------------------
+
+        fig = plt.figure(figsize=(7, 7))
+
+        ax = fig.add_subplot(
+            111,
+            projection="3d",
+        )
+
+        ax.scatter(
+            points_3d[:, 0],
+            points_3d[:, 1],
+            points_3d[:, 2],
+            s=5,
+            alpha=0.6,
+        )
+
+        ax.set_title(
+            f"Learned latent: {repr(manifold)}"
+        )
+
+        ax.set_xlabel("Dim 1")
+        ax.set_ylabel("Dim 2")
+        ax.set_zlabel("Dim 3")
+
+        # -----------------------------------------------------
+        # Equal aspect ratio
+        # -----------------------------------------------------
+
+        max_range = (
+            points_3d.max(axis=0)
+            - points_3d.min(axis=0)
+        ).max() / 2.0
+
+        if max_range == 0:
+            max_range = 1.0
+
+        mid = (
+            points_3d.max(axis=0)
+            + points_3d.min(axis=0)
+        ) / 2.0
+
+        ax.set_xlim(
+            mid[0] - max_range,
+            mid[0] + max_range,
+        )
+
+        ax.set_ylim(
+            mid[1] - max_range,
+            mid[1] + max_range,
+        )
+
+        ax.set_zlim(
+            mid[2] - max_range,
+            mid[2] + max_range,
+        )
+
+        # -----------------------------------------------------
+        # Rotating camera
+        # -----------------------------------------------------
+
+        def update(frame):
+
+            azimuth = (
+                frame * 360 / n_frames
+            ) % 360
+
+            ax.view_init(
+                elev=30,
+                azim=azimuth,
+            )
+
+            return (ax,)
+
+        animation = FuncAnimation(
+            fig,
+            update,
+            frames=n_frames,
+            interval=1000 / fps,
+            blit=False,
+        )
+
+        # -----------------------------------------------------
+        # Save GIF
+        # -----------------------------------------------------
+
+        filename = os.path.join(
+            save_dir,
+            f"{i}_{model_name}.gif",
+        )
+
+        animation.save(
+            filename,
+            writer=PillowWriter(fps=fps),
+        )
+
+        plt.close(fig)
 
 def geodesic_preservation(save_dir, model_name, D_true, D_learned):
     mask = torch.triu(
@@ -999,14 +1259,14 @@ def learnt_latent_analysis(model: ManifoldModelFrameworkV2, X: Tensor, Z: Tensor
     with torch.no_grad():
         D_true = pairwise_product_distance(
             z_components,
-            manifolds,
+            model.manifolds,
         )
         
         z_learned_components = model.latent_representations(X)
 
         D_learned = pairwise_product_distance(
             z_learned_components,
-            manifolds,
+            model.manifolds,
         )
         
         D_product = product_distance(z_components, z_learned_components, model.manifolds)
@@ -1050,76 +1310,77 @@ def print_analysis_results(analysis_results, i):
 
 if __name__ == "__main__":
     
+    cfg, arms = parse_args()
+    
     # X, Y = generate_swiss_roll_dataset(
     # n_samples=1000,
     # noise=0.05
     # )
     
-    manifolds = [Hyperbolic(3)]
+    # manifolds = [Hyperbolic(3)]
     
-    X, z_components, Z = generate_v2_dataset(
-        n_samples=1000,
-        noise=0,
-        seed=0,
-        manifolds=manifolds)
+    # X, z_components, Z = generate_v2_dataset(
+    #     n_samples=1000,
+    #     noise=0,
+    #     seed=0,
+    #     manifolds=manifolds)
 
-    cfg, arms = parse_args()
-    # V2
-    sum_dim = sum([m.dim for m in manifolds])
-    cfg.out_dim = X.shape[1]
-    euclid_manifold = [FlatEuclidean(sum_dim)]
+    # # V2
+    # sum_dim = sum([m.dim for m in manifolds])
+    # cfg.out_dim = X.shape[1]
+    # euclid_manifold = [FlatEuclidean(sum_dim)]
     
-    # model = buildv2(cfg, manifolds, X.shape[1])
-    dataset = CustomDataset(X, X)
+    # # model = buildv2(cfg, manifolds, X.shape[1])
+    # dataset = CustomDataset(X, X)
     
-    train_dataset, test_dataset = random_split(dataset, [0.8, 0.2]) 
+    # train_dataset, test_dataset = random_split(dataset, [0.8, 0.2]) 
     
     
-    d1, d2, d3, d4, d5 = random_split(train_dataset, [0.2 for __ in range(0, 5)])
-    partition_train_datasets = [d1, d2, d3, d4, d5]
+    # d1, d2, d3, d4, d5 = random_split(train_dataset, [0.2 for __ in range(0, 5)])
+    # partition_train_datasets = [d1, d2, d3, d4, d5]
     
-    final_train_mse = []
-    final_test_mse = []
+    # final_train_mse = []
+    # final_test_mse = []
     
-    final_base_train_mse = []
-    final_base_test_mse = []
-    for i in range(0, len(partition_train_datasets)):
-        model = buildv2(cfg, manifolds, X.shape[1])
-        baseline_model = buildv2(cfg, euclid_manifold, X.shape[1])
+    # final_base_train_mse = []
+    # final_base_test_mse = []
+    # for i in range(0, len(partition_train_datasets)):
+    #     model = buildv2(cfg, manifolds, X.shape[1])
+    #     baseline_model = buildv2(cfg, euclid_manifold, X.shape[1])
         
-        data_so_far = combined_dataset = ConcatDataset(partition_train_datasets[:i + 1])
+    #     data_so_far = combined_dataset = ConcatDataset(partition_train_datasets[:i + 1])
         
-        results = run_onev2(cfg, arms[0], 0, data_so_far, test_dataset, model)
-        baseline_results = run_onev2(cfg, arms[0], 0, data_so_far, test_dataset, baseline_model)
+    #     results = run_onev2(cfg, arms[0], 0, data_so_far, test_dataset, model)
+    #     baseline_results = run_onev2(cfg, arms[0], 0, data_so_far, test_dataset, baseline_model)
         
-        analysis_results = learnt_latent_analysis(model, X, Z, z_components, f"latent_model_data_partition_{i}", "/scratch/wongbr55/LatentManifoldRegularizer/V2Analysis/Hyperbolic")
-        print_analysis_results(analysis_results, i)
-        final_train_mse.append(results.train_mse)
-        final_test_mse.append(results.test_mse)
-        final_base_train_mse.append(baseline_results.train_mse)
-        final_base_test_mse.append(baseline_results.test_mse)
+    #     analysis_results = learnt_latent_analysis(model, X, Z, z_components, f"latent_model_data_partition_{i}", "/scratch/wongbr55/LatentManifoldRegularizer/V2Analysis/Hyperbolic")
+    #     print_analysis_results(analysis_results, i)
+    #     final_train_mse.append(results.train_mse)
+    #     final_test_mse.append(results.test_mse)
+    #     final_base_train_mse.append(baseline_results.train_mse)
+    #     final_base_test_mse.append(baseline_results.test_mse)
     
-    print("\n" + "=" * 80)
-    print(f"{'Run':<8} {'Train MSE':>15} {'Test MSE':>15} {'Base Train MSE':>18} {'Base Test MSE':>18}")
-    print("-" * 80)
+    # print("\n" + "=" * 80)
+    # print(f"{'Run':<8} {'Train MSE':>15} {'Test MSE':>15} {'Base Train MSE':>18} {'Base Test MSE':>18}")
+    # print("-" * 80)
 
-    for i, (train, test, base_train, base_test) in enumerate(
-        zip(
-            final_train_mse,
-            final_test_mse,
-            final_base_train_mse,
-            final_base_test_mse
-        )
-    ):
-        print(
-            f"{i:<8} "
-            f"{train:>15.6f} "
-            f"{test:>15.6f} "
-            f"{base_train:>18.6f} "
-            f"{base_test:>18.6f}"
-        )
+    # for i, (train, test, base_train, base_test) in enumerate(
+    #     zip(
+    #         final_train_mse,
+    #         final_test_mse,
+    #         final_base_train_mse,
+    #         final_base_test_mse
+    #     )
+    # ):
+    #     print(
+    #         f"{i:<8} "
+    #         f"{train:>15.6f} "
+    #         f"{test:>15.6f} "
+    #         f"{base_train:>18.6f} "
+    #         f"{base_test:>18.6f}"
+    #     )
 
-    print("=" * 80)
+    # print("=" * 80)
     
     # results = run_one(cfg, arms[0], 0, train_dataset, test_dataset, model)
     # test_mse = results.test_mse
@@ -1131,99 +1392,112 @@ if __name__ == "__main__":
     
     
     # V1
+    X, Z = generate_swiss_roll_dataset(
+        n_samples=1000,
+        noise=0
+        )
+    
+    cfg.out_dim = X.shape[1]
+    
+    dataset = CustomDataset(X, X)
+    
+    train_dataset, test_dataset = random_split(dataset, [0.8, 0.2]) 
     rows: list[tuple[str, Result, tuple[float, float], tuple[float, float], float]] = []
     for arm in arms:
-        results = [run_onev1(cfg, arm, seed, train_dataset, test_dataset, None) for seed in range(cfg.seeds)]
-        mse = aggregate([r.test_mse for r in results])
-        r2 = aggregate([r.r2 for r in results])
-        soft = aggregate([r.test_mse_soft for r in results])[0]
-        rows.append((arm, results[0], mse, r2, soft))
-        print(f"  ran {arm:<13} test MSE {mse[0]:.5f} +- {mse[1]:.5f}")
+        results = run_onev1(cfg, arm, 0, train_dataset, test_dataset, None, X, Z, arm, "/scratch/wongbr55/LatentManifoldRegularizer/V1Analysis")
+        mse = results.test_mse
+        r2 = results.r2
+        soft = results.test_mse_soft
+        rows.append((arm, None, mse, r2, soft))
+        
+        
+        
+        print(f"ran {arm:<13} hard test MSE {mse:.5f} and soft test MSE {results.test_mse_soft:.5f}")
 
-    print(f"\n{'arm':<13} {'test MSE (hard)':>18} {'soft':>9} {'train MSE':>10} {'R^2':>8} "
-            f"{'align':>8} {'params':>9}  description")
-    print("-" * 114)
-    for arm, first, mse, r2, soft in rows:
-        desc, _ = ARMS[arm]
-        align = f"{first.alignment:6.1f}d" if first.alignment is not None else "     --"
-        print(f"{arm:<13} {mse[0]:>10.5f} +-{mse[1]:<6.5f} {soft:>9.5f} {first.train_mse:>10.5f} "
-                f"{r2[0]:>8.4f} {align:>8} {first.params:>9,}  {desc}")
+    # print(f"\n{'arm':<13} {'test MSE (hard)':>18} {'soft':>9} {'train MSE':>10} {'R^2':>8} "
+    #         f"{'align':>8} {'params':>9}  description")
+    # print("-" * 114)
+    # for arm, first, mse, r2, soft in rows:
+    #     desc, _ = ARMS[arm]
+    #     align = f"{first.alignment:6.1f}d" if first.alignment is not None else "     --"
+    #     print(f"{arm:<13} {mse[0]:>10.5f} +-{mse[1]:<6.5f} {soft:>9.5f} {first.train_mse:>10.5f} "
+    #             f"{r2[0]:>8.4f} {align:>8} {first.params:>9,}  {desc}")
 
-    print("\nhard = arg-max branch only (inference); soft = gate-weighted mixture.")
-    print("       Identical for single-manifold arms.  The loss is sum_k gate_k * mse_k, so")
-    print("       each branch is trained to stand alone and the two should nearly agree.")
-    print("align = mean geodesic angle between the latent and the true sphere coordinate,")
-    print("        after optimal orthogonal alignment (single 3-d bottlenecks only).")
-    print("test MSE and R^2 are mean +- std over seeds; train MSE is from the first seed.")
+    # print("\nhard = arg-max branch only (inference); soft = gate-weighted mixture.")
+    # print("       Identical for single-manifold arms.  The loss is sum_k gate_k * mse_k, so")
+    # print("       each branch is trained to stand alone and the two should nearly agree.")
+    # print("align = mean geodesic angle between the latent and the true sphere coordinate,")
+    # print("        after optimal orthogonal alignment (single 3-d bottlenecks only).")
+    # print("test MSE and R^2 are mean +- std over seeds; train MSE is from the first seed.")
     
-    plt.figure(figsize=(8, 6))
+    # plt.figure(figsize=(8, 6))
 
-    n_plots = len(rows)
+    # n_plots = len(rows)
 
-    n_cols = 2
-    n_rows = math.ceil(n_plots / n_cols)
+    # n_cols = 2
+    # n_rows = math.ceil(n_plots / n_cols)
 
-    fig = plt.figure(
-        figsize=(9 * n_cols, 8 * n_rows)
-    )
+    # fig = plt.figure(
+    #     figsize=(9 * n_cols, 8 * n_rows)
+    # )
 
-    for idx, (arm, first, _, _, _) in enumerate(rows):
+    # for idx, (arm, first, _, _, _) in enumerate(rows):
 
-        true = first.targets.numpy()
-        pred = first.predictions.numpy()
+    #     true = first.targets.numpy()
+    #     pred = first.predictions.numpy()
 
-        ax = fig.add_subplot(
-            n_rows,
-            n_cols,
-            idx + 1,
-            projection="3d"
-        )
+    #     ax = fig.add_subplot(
+    #         n_rows,
+    #         n_cols,
+    #         idx + 1,
+    #         projection="3d"
+    #     )
 
-        # Plot ground truth Swiss roll
-        ax.scatter(
-            X[:, 0],
-            X[:, 1],
-            X[:, 2],
-            s=5,
-            color="black",
-            label="Ground truth"
-        )
+    #     # Plot ground truth Swiss roll
+    #     ax.scatter(
+    #         X[:, 0],
+    #         X[:, 1],
+    #         X[:, 2],
+    #         s=5,
+    #         color="black",
+    #         label="Ground truth"
+    #     )
 
-        # Plot reconstructed points
-        ax.scatter(
-            pred[:, 0],
-            pred[:, 1],
-            pred[:, 2],
-            s=12,
-            alpha=0.9,
-            color="red",
-            label="Reconstruction"
-        )
+    #     # Plot reconstructed points
+    #     ax.scatter(
+    #         pred[:, 0],
+    #         pred[:, 1],
+    #         pred[:, 2],
+    #         s=12,
+    #         alpha=0.9,
+    #         color="red",
+    #         label="Reconstruction"
+    #     )
 
-        ax.set_title(
-            arm,
-            fontsize=16
-        )
+    #     ax.set_title(
+    #         arm,
+    #         fontsize=16
+    #     )
 
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
-        ax.set_zlabel("z")
+    #     ax.set_xlabel("x")
+    #     ax.set_ylabel("y")
+    #     ax.set_zlabel("z")
 
-        ax.legend()
+    #     ax.legend()
 
-        # Keep same viewing angle
-        ax.view_init(
-            elev=20,
-            azim=-60
-        )
+    #     # Keep same viewing angle
+    #     ax.view_init(
+    #         elev=20,
+    #         azim=-60
+    #     )
 
 
-    plt.tight_layout()
+    # plt.tight_layout()
 
-    plt.savefig(
-        "/scratch/wongbr55/latent_man_reg/swiss_roll_reconstructions.png",
-        dpi=300,
-        bbox_inches="tight"
-    )
+    # plt.savefig(
+    #     "/scratch/wongbr55/$HOME/LatentManifoldRegularizer/V1Analysis/swiss_roll_reconstructions.png",
+    #     dpi=300,
+    #     bbox_inches="tight"
+    # )
 
-    plt.show()
+    # plt.show()
